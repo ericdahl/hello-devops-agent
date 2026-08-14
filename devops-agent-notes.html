@@ -1,0 +1,499 @@
+<title>AWS DevOps Agent</title>
+<style>
+  :root {
+    --ground:      #F1F3F6;
+    --surface:     #FFFFFF;
+    --surface-alt: #E7EAEF;
+    --line:        #CFD5DE;
+    --line-soft:   #DFE3EA;
+    --ink:         #171B22;
+    --ink-2:       #3D4653;
+    --muted:       #6A7484;
+    --accent:      #A8431A;
+    --accent-soft: #F3E2DA;
+    --ok:          #1F6B3B;
+    --warn:        #8A5B08;
+    --bad:         #A3231C;
+    --code-bg:     #E9ECF1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:      #14171C;
+      --surface:     #1B1F26;
+      --surface-alt: #232830;
+      --line:        #333A45;
+      --line-soft:   #272D36;
+      --ink:         #E5E9EF;
+      --ink-2:       #B4BCC8;
+      --muted:       #838D9C;
+      --accent:      #E08256;
+      --accent-soft: #33221B;
+      --ok:          #6CC08A;
+      --warn:        #D4A548;
+      --bad:         #E58077;
+      --code-bg:     #232830;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:      #14171C;
+    --surface:     #1B1F26;
+    --surface-alt: #232830;
+    --line:        #333A45;
+    --line-soft:   #272D36;
+    --ink:         #E5E9EF;
+    --ink-2:       #B4BCC8;
+    --muted:       #838D9C;
+    --accent:      #E08256;
+    --accent-soft: #33221B;
+    --ok:          #6CC08A;
+    --warn:        #D4A548;
+    --bad:         #E58077;
+    --code-bg:     #232830;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 16.5px;
+    line-height: 1.62;
+    margin: 0;
+    padding: 0 1.25rem 6rem;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 60rem; margin: 0 auto; }
+
+  /* ---- masthead ---- */
+  header.top {
+    padding: 3.5rem 0 2rem;
+    border-bottom: 2px solid var(--ink);
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+  .eyebrow {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.72rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  h1 {
+    font-size: clamp(2.1rem, 5.5vw, 3.1rem);
+    line-height: 1.04;
+    letter-spacing: -0.032em;
+    font-weight: 660;
+    margin: 0;
+    text-wrap: balance;
+  }
+  .standfirst {
+    font-size: 1.12rem;
+    color: var(--ink-2);
+    max-width: 42rem;
+    margin: 0;
+  }
+
+  /* ---- fact strip ---- */
+  .facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    margin: 2rem 0 0;
+  }
+  .facts div { background: var(--surface); padding: 0.85rem 1rem; }
+  .facts dt {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.66rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 0.3rem;
+  }
+  .facts dd {
+    margin: 0;
+    font-size: 0.98rem;
+    font-weight: 580;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---- sections ---- */
+  section { padding-top: 3.25rem; }
+  h2 {
+    font-size: 1.42rem;
+    letter-spacing: -0.018em;
+    font-weight: 640;
+    margin: 0 0 0.4rem;
+    text-wrap: balance;
+  }
+  h2 .num {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.78rem;
+    color: var(--accent);
+    margin-right: 0.7rem;
+    letter-spacing: 0.06em;
+    vertical-align: 0.18em;
+  }
+  h3 {
+    font-size: 1.02rem;
+    font-weight: 620;
+    margin: 1.9rem 0 0.35rem;
+    letter-spacing: -0.008em;
+  }
+  p { margin: 0 0 0.95rem; max-width: 44rem; }
+  section > p:first-of-type { margin-top: 0.7rem; }
+  ul, ol { max-width: 44rem; padding-left: 1.15rem; margin: 0 0 1rem; }
+  li { margin-bottom: 0.4rem; }
+  strong { font-weight: 640; }
+
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.855em;
+    background: var(--code-bg);
+    padding: 0.1em 0.36em;
+    border-radius: 2px;
+  }
+  pre {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    padding: 0.95rem 1.1rem;
+    overflow-x: auto;
+    font-size: 0.83rem;
+    line-height: 1.6;
+    margin: 0 0 1.1rem;
+  }
+  pre code { background: none; padding: 0; font-size: 1em; }
+
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ---- tables ---- */
+  .scroll { overflow-x: auto; margin: 0 0 1.2rem; border: 1px solid var(--line); background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 0.6rem 0.85rem; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  thead th {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.68rem;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 500;
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td code { white-space: nowrap; }
+
+  /* ---- callout ---- */
+  .note {
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--warn);
+    background: var(--surface);
+    padding: 0.9rem 1.1rem;
+    margin: 0 0 1.2rem;
+    font-size: 0.94rem;
+    max-width: 46rem;
+  }
+  .note.bad  { border-left-color: var(--bad); }
+  .note.good { border-left-color: var(--ok); }
+  .note .label {
+    display: block;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.66rem;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 0.3rem;
+  }
+  .note p:last-child { margin-bottom: 0; }
+
+  /* ---- steps ---- */
+  ol.steps { list-style: none; padding: 0; counter-reset: s; max-width: 46rem; }
+  ol.steps > li {
+    counter-increment: s;
+    display: grid;
+    grid-template-columns: 2.1rem 1fr;
+    gap: 0.9rem;
+    padding: 0.75rem 0;
+    border-top: 1px solid var(--line-soft);
+    margin: 0;
+  }
+  ol.steps > li::before {
+    content: counter(s, decimal-leading-zero);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.74rem;
+    color: var(--accent);
+    padding-top: 0.28rem;
+  }
+  ol.steps b { display: block; font-weight: 620; }
+  ol.steps span { color: var(--ink-2); font-size: 0.95rem; }
+
+  /* ---- diagram ---- */
+  figure { margin: 1.5rem 0 1.2rem; }
+  .diagram { overflow-x: auto; border: 1px solid var(--line); background: var(--surface); padding: 1.2rem; }
+  .diagram svg { display: block; min-width: 46rem; width: 100%; height: auto; }
+  figcaption { font-size: 0.82rem; color: var(--muted); margin-top: 0.55rem; max-width: 44rem; }
+  .d-box   { fill: var(--surface-alt); stroke: var(--line); stroke-width: 1.5; }
+  .d-box-a { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+  .d-t     { fill: var(--ink); font-size: 12.5px; font-weight: 600;
+             font-family: ui-sans-serif, -apple-system, "Segoe UI", sans-serif; }
+  .d-s     { fill: var(--muted); font-size: 10.5px;
+             font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .d-lbl   { fill: var(--accent); font-size: 9.5px; letter-spacing: 0.09em;
+             font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .d-line  { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+  .d-dash  { stroke: var(--muted); stroke-width: 1.2; fill: none; stroke-dasharray: 3 3; }
+
+  .yn { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem; font-weight: 600; white-space: nowrap; }
+  .yn.y { color: var(--ok); }
+  .yn.n { color: var(--bad); }
+  .yn.m { color: var(--warn); }
+
+  footer {
+    margin-top: 4rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--line);
+    font-size: 0.88rem;
+    color: var(--muted);
+  }
+  footer ul { list-style: none; padding: 0; max-width: none;
+              display: grid; grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr)); gap: 0.35rem 1.5rem; }
+  footer li { margin: 0; }
+</style>
+
+<div class="wrap">
+
+<header class="top">
+  <div class="eyebrow">aidevops · GA 31 Mar 2026 · field notes</div>
+  <h1>AWS DevOps Agent</h1>
+  <p class="standfirst">A managed LLM agent that reads your telemetry, code, and deploy history to explain why something broke. Here is what it actually is underneath the launch copy.</p>
+  <dl class="facts">
+    <div><dt>API namespace</dt><dd><code>aidevops</code></dd></div>
+    <div><dt>CLI</dt><dd><code>aws devops-agent</code></dd></div>
+    <div><dt>Price</dt><dd>$0.0083/sec</dd></div>
+    <div><dt>Effective</dt><dd>~$29.88/hr</dd></div>
+    <div><dt>Regions</dt><dd>11</dd></div>
+    <div><dt>Built on</dt><dd>Bedrock AgentCore</dd></div>
+  </dl>
+</header>
+
+<section>
+  <h2><span class="num">01</span>The one-paragraph version</h2>
+  <p>AWS DevOps Agent is a hosted agent loop that AWS runs on your behalf. You give it a cross-account IAM role and some integration credentials; it crawls your accounts with Resource Explorer and builds a topology graph of your resources and their relationships. When an incident arrives — via webhook, or you ask it a question — it runs a tool-calling loop over CloudWatch, CloudTrail, your Git history, and whatever observability vendors you connected, forms hypotheses about the cause, tests them with more queries, and writes up findings with a suggested fix. You pay per second of agent wall-clock time.</p>
+  <p>The genuinely new part is not the LLM. It is the <strong>pre-built read integration layer</strong> — the topology graph, the vendor connectors, the account-assume plumbing — that you would otherwise spend months wiring up yourself.</p>
+</section>
+
+<section>
+  <h2><span class="num">02</span>How the pieces fit</h2>
+  <figure>
+    <div class="diagram">
+      <svg viewBox="0 0 900 400" role="img" aria-label="Diagram: triggers enter an agent space, which runs an investigation loop over connected data sources and emits findings.">
+        <text x="0" y="12" class="d-lbl">TRIGGERS</text>
+        <rect x="0" y="26" width="164" height="46" class="d-box"/>
+        <text x="14" y="46" class="d-t">CloudWatch alarm</text>
+        <text x="14" y="62" class="d-s">via Lambda bridge</text>
+        <rect x="0" y="84" width="164" height="46" class="d-box"/>
+        <text x="14" y="104" class="d-t">PagerDuty / Grafana</text>
+        <text x="14" y="120" class="d-s">HMAC-signed POST</text>
+        <rect x="0" y="142" width="164" height="46" class="d-box"/>
+        <text x="14" y="162" class="d-t">Operator web app</text>
+        <text x="14" y="178" class="d-s">chat / on-demand</text>
+        <rect x="0" y="200" width="164" height="46" class="d-box"/>
+        <text x="14" y="220" class="d-t">Scheduled eval</text>
+        <text x="14" y="236" class="d-s">proactive scan</text>
+
+        <path d="M164 49 H206 M164 107 H206 M164 165 H206 M164 223 H206" class="d-line"/>
+        <path d="M206 49 V223 M206 136 H236" class="d-line"/>
+        <path d="M230 131 l8 5 -8 5 z" fill="var(--muted)" stroke="none"/>
+
+        <rect x="242" y="0" width="378" height="330" class="d-box-a" fill="none"/>
+        <text x="256" y="-6" class="d-lbl" transform="translate(0,18)">AGENT SPACE — the trust + scope boundary</text>
+
+        <rect x="260" y="40" width="164" height="52" class="d-box"/>
+        <text x="274" y="60" class="d-t">Topology graph</text>
+        <text x="274" y="76" class="d-s">built continuously</text>
+        <rect x="440" y="40" width="164" height="52" class="d-box"/>
+        <text x="454" y="60" class="d-t">Skills</text>
+        <text x="454" y="76" class="d-s">your SKILL.md runbooks</text>
+
+        <rect x="260" y="108" width="344" height="106" class="d-box-a"/>
+        <text x="274" y="130" class="d-t">Investigation loop</text>
+        <text x="274" y="150" class="d-s">correlate telemetry</text>
+        <text x="274" y="168" class="d-s">diff recent deploys + config</text>
+        <text x="274" y="186" class="d-s">hypothesize → query → confirm</text>
+        <path d="M576 132 a26 26 0 1 1 -0.1 0" class="d-dash"/>
+        <path d="M572 128 l8 4 -8 4 z" fill="var(--muted)" stroke="none"/>
+
+        <rect x="260" y="230" width="164" height="52" class="d-box"/>
+        <text x="274" y="250" class="d-t">Associations</text>
+        <text x="274" y="266" class="d-s">sts:AssumeRole per acct</text>
+        <rect x="440" y="230" width="164" height="52" class="d-box"/>
+        <text x="454" y="250" class="d-t">Integrations</text>
+        <text x="454" y="266" class="d-s">+ your MCP servers</text>
+
+        <text x="242" y="356" class="d-lbl">READ-ONLY DATA SOURCES</text>
+        <text x="242" y="376" class="d-s">CloudWatch · CloudTrail · Config · X-Ray · Datadog · Splunk · GitHub · GitLab</text>
+        <path d="M310 282 V346 M480 282 V346" class="d-dash"/>
+
+        <path d="M620 136 H676" class="d-line"/>
+        <path d="M670 131 l8 5 -8 5 z" fill="var(--muted)" stroke="none"/>
+
+        <text x="682" y="12" class="d-lbl">OUTPUT</text>
+        <rect x="682" y="26" width="164" height="46" class="d-box"/>
+        <text x="696" y="46" class="d-t">Root cause writeup</text>
+        <text x="696" y="62" class="d-s">evidence + timeline</text>
+        <rect x="682" y="84" width="164" height="46" class="d-box"/>
+        <text x="696" y="104" class="d-t">Mitigation plan</text>
+        <text x="696" y="120" class="d-s">proposed, not applied</text>
+        <rect x="682" y="142" width="164" height="46" class="d-box"/>
+        <text x="696" y="162" class="d-t">Slack / ServiceNow</text>
+        <text x="696" y="178" class="d-s">routed notification</text>
+        <rect x="682" y="200" width="164" height="46" class="d-box"/>
+        <text x="696" y="220" class="d-t">Recommendations</text>
+        <text x="696" y="236" class="d-s">prevention backlog</text>
+        <path d="M676 49 H682 M676 107 H682 M676 165 H682 M676 223 H682" class="d-line"/>
+        <path d="M676 26 V246" class="d-line"/>
+      </svg>
+    </div>
+    <figcaption>Everything inside the agent space box is scoped by that space. Two spaces cannot see each other's accounts, investigations, or chat history.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2><span class="num">03</span>The vocabulary, decoded</h2>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Term</th><th>What it really is</th></tr></thead>
+      <tbody>
+        <tr><td><b>Agent Space</b><br><code>AWS::DevOpsAgent::AgentSpace</code></td><td>The unit of everything: trust boundary, scope boundary, data boundary, billing context. Roughly "one on-call team." Each has its own web app URL and its own isolated investigation history.</td></tr>
+        <tr><td><b>Association</b><br><code>AWS::DevOpsAgent::Association</code></td><td>A link from a space to a data source. For AWS it is an account plus a role ARN to assume, typed <code>monitor</code> (primary) or <code>source</code> (secondary). For third parties it is an OAuth/API credential.</td></tr>
+        <tr><td><b>Topology</b></td><td>The resource-relationship graph the agent builds by crawling your accounts. Built on space creation and maintained continuously. Free — you are not billed for mapping.</td></tr>
+        <tr><td><b>Skill</b></td><td>A folder with a <code>SKILL.md</code> — same Agent Skills spec Claude Code uses. Frontmatter <code>name</code> + <code>description</code>; the description is what the agent matches on. Your runbooks, in Markdown.</td></tr>
+        <tr><td><b>Agent types</b></td><td>Six loop variants you can target skills at: Generic, On-demand, Incident Triage, Incident RCA, Incident Mitigation, Evaluation. Triage runs first and can <em>skip</em> an incident outright.</td></tr>
+        <tr><td><b>Trigger / Webhook</b></td><td>A per-space HTTPS endpoint. You POST an incident JSON payload signed with HMAC-SHA256. This is the only automated entry point.</td></tr>
+        <tr><td><b>Operator App</b></td><td>A separate web application outside the AWS console, with its own IAM role and its own IdP config. Admins configure in the console; on-call lives in the web app.</td></tr>
+        <tr><td><b>Asset</b></td><td>The API-level container for skills and uploaded knowledge — what <code>create-asset</code> / <code>create-asset-file</code> manipulate.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">04</span>What one investigation actually does</h2>
+  <p>This is a real sequence, not a feature list — each step feeds the next.</p>
+  <ol class="steps">
+    <li><b>Triage</b><span>Decide whether this incident is worth investigating at all. Your triage skills can define skip criteria (maintenance windows, severity floors). Skipped incidents get a stated reason.</span></li>
+    <li><b>Ground in topology</b><span>Look up the alarming resource in the pre-built graph to get blast radius immediately, instead of discovering dependencies mid-incident.</span></li>
+    <li><b>Correlate telemetry</b><span>Pull logs, metrics, and traces around the incident window across every associated account and region.</span></li>
+    <li><b>Diff what changed</b><span>CloudTrail config changes, recent deployments, Git commits. This is where the GitHub/GitLab integration earns its keep — "what shipped in the last hour" is the highest-yield question in most incidents.</span></li>
+    <li><b>Hypothesize and test</b><span>Form a candidate cause, then issue more read queries to confirm or kill it. This loop is the part you are paying per-second for.</span></li>
+    <li><b>Write up</b><span>Root cause with supporting evidence, plus a ranked mitigation plan. Routed to Slack / ServiceNow / PagerDuty if connected.</span></li>
+  </ol>
+</section>
+
+<section>
+  <h2><span class="num">05</span>Read vs. write — the part worth being precise about</h2>
+  <p>The default posture is read-only. The managed policy <code>AIDevOpsAgentAccessPolicy</code> grants describe/get/list across CloudWatch, Logs, Config and friends, plus one narrow write: <code>iam:CreateServiceLinkedRole</code> for Resource Explorer. Registered MCP servers are required to expose read-only tools. AWS's own production guidance says explicitly to avoid granting modify or delete permissions.</p>
+  <div class="note">
+    <span class="label">Unresolved</span>
+    <p>The marketing page says the agent "provides specific remediation actions, validates success, and can rollback changes if needed," and there is an <em>Incident Mitigation</em> agent type. But the FAQ and IAM guidance describe investigation and recommendation only. My read: mitigation is plan-and-approve, and any actual write happens through a mechanism you grant separately. Worth confirming hands-on before you trust either description.</p>
+  </div>
+</section>
+
+<section>
+  <h2><span class="num">06</span>Where AgentCore actually fits</h2>
+  <p>Both are AWS agent products and the naming invites confusion, so: <strong>AgentCore is the platform this is built on, not something you touch.</strong> You never see a Runtime container, a Gateway, or a Memory store. There is no Python handler to write. DevOps Agent is a finished SaaS product that happens to be implemented on AgentCore internally, in the same way an RDS instance happens to run on EC2.</p>
+  <p>Your extension points are deliberately narrow and none of them are AgentCore APIs:</p>
+  <ul>
+    <li><strong>Skills</strong> — Markdown instructions that shape how it investigates.</li>
+    <li><strong>MCP servers</strong> — your own read-only tools, over public HTTPS, registered per account and allowlisted per space.</li>
+    <li><strong>Integrations</strong> — the supported connector list.</li>
+  </ul>
+  <p>If you want to build an arbitrary agent, that is AgentCore. If you want an on-call teammate that already knows how to read CloudWatch, that is this.</p>
+</section>
+
+<section>
+  <h2><span class="num">07</span>What it costs, concretely</h2>
+  <p>$0.0083 per agent-second, billed per second, only while the agent is working. Idle time and topology mapping are free. That is <strong>$0.498/min</strong>, <strong>$29.88/hr</strong>.</p>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>Scenario</th><th>Duration</th><th>Cost</th></tr></thead>
+      <tbody>
+        <tr><td>One quick investigation</td><td>5 min</td><td>$2.49</td></tr>
+        <tr><td>One gnarly investigation</td><td>30 min</td><td>$14.94</td></tr>
+        <tr><td>Small team, 10 investigations/mo</td><td>~8 min avg</td><td>~$40/mo</td></tr>
+        <tr><td>Active team, 80 investigations + 100 chats/mo</td><td>—</td><td>~$344/mo</td></tr>
+        <tr><td>Enterprise, 500 incidents + 40 evals</td><td>—</td><td>~$2,366/mo</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="note good">
+    <span class="label">Free trial</span>
+    <p>Two months for any account new to DevOps Agent, regardless of account age: up to 10 agent spaces, 20 hours of investigations, 15 hours of evaluations, 20 hours of on-demand tasks. Plenty for a hello-world.</p>
+  </div>
+  <div class="note bad">
+    <span class="label">No cost cap</span>
+    <p>There is no ceiling on per-incident spend. A noisy alarm wired straight to the webhook with no triage skill is an open tap. Put a budget alarm on it before you point anything real at it.</p>
+  </div>
+  <p>Separately: paid AWS Support plans get monthly credits against DevOps Agent — 100% of the prior month's support charge on Unified Operations, 75% on Enterprise, 30% on Business+. They expire monthly and don't roll over. Underlying CloudWatch and trace-retrieval calls are billed normally.</p>
+</section>
+
+<section>
+  <h2><span class="num">08</span>The honest limitations</h2>
+
+  <h3>It correlates better than it concludes</h3>
+  <p>The sharpest independent finding: in a test where a Lambda's <code>TABLE_NAME</code> env var pointed at <code>…-inventory-v1</code> while its IAM policy granted <code>…-inventory</code>, the agent found both halves of the mismatch and then recommended fixing the wrong one. Following it would have traded an <code>AccessDeniedException</code> for a <code>ResourceNotFoundException</code>. It is excellent at assembling every relevant fact; deciding which side of a mismatch is the bug is still yours.</p>
+
+  <h3>CloudWatch alarms don't connect natively</h3>
+  <p>Despite CloudWatch being the flagship integration, there is no alarm action target for DevOps Agent. You write a bridge Lambda: read webhook URL and HMAC secret from Secrets Manager or SSM, build the incident payload, sign it, POST it. The webhook URL itself is generated in the console and cannot be provisioned by IaC. That is a real gap between the pitch and the setup.</p>
+
+  <h3>Output quality is capped by input coverage</h3>
+  <p>It can only reason over what you connected. Thin instrumentation in, thin analysis out. Multicloud is real but shallow — Azure correlation works, with noticeably less depth, and there is no CloudTrail equivalent to lean on.</p>
+
+  <h3>Operational sharp edges</h3>
+  <ul>
+    <li>SCPs must permit <code>aidevops:*</code> and <code>bedrock:InvokeModel</code>, or investigations fail with a correctly configured space.</li>
+    <li>Trust policy <code>aws:SourceArn</code> must match the agent space ARN — wildcards where an exact ARN is expected return 400.</li>
+    <li>Skill zips reject anything in <code>scripts/</code> unless Sandbox preview is on. 6 MB, 100 files max.</li>
+    <li>The Slack app showed "not approved by Slack" during OAuth as of mid-2026. Functional, but your security team will ask.</li>
+    <li>Bedrock may perform stateless inference in US regions other than your space's region — relevant if you have data residency requirements.</li>
+  </ul>
+</section>
+
+<section>
+  <h2><span class="num">09</span>Hello-world, when you want it</h2>
+  <p>Check first that your credentials actually reach the service — <code>aws devops-agent list-agent-spaces</code> should return rather than deny, and <code>aws cloudformation describe-type --type RESOURCE --type-name AWS::DevOpsAgent::AgentSpace</code> should resolve in a supported region. An empty space list also means the free trial is still intact. Admin in the target account is the simplest starting point; a scoped user without <code>aidevops:*</code> will fail at the first call.</p>
+  <p>The shape of the smallest end-to-end demo:</p>
+  <ol class="steps">
+    <li><b>Terraform the space</b><span>Two IAM roles (agent + operator app), one <code>AgentSpace</code>, one <code>Association</code> of type <code>monitor</code> pointing at this account. Trust principal is <code>aidevops.amazonaws.com</code> with both <code>aws:SourceAccount</code> and <code>aws:SourceArn</code> conditions.</span></li>
+    <li><b>Deploy something breakable</b><span>A Lambda that publishes to an SNS topic it lacks permission for. Deterministic, instant, and a genuinely realistic failure mode.</span></li>
+    <li><b>Wire the trigger</b><span>Generate the webhook URL in the console, store URL + HMAC secret in Secrets Manager, then: error metric → CloudWatch alarm → bridge Lambda → signed POST.</span></li>
+    <li><b>Break it and watch</b><span>Invoke the failing Lambda, wait for the alarm, then read the investigation in the operator web app. Compare its conclusion against the bug you planted.</span></li>
+    <li><b>Add a skill</b><span>Write one <code>SKILL.md</code> for this service and re-run to see how the investigation changes. This is the highest-signal part of the exercise.</span></li>
+  </ol>
+  <p>AWS publishes both halves as samples: <a href="https://github.com/aws-samples/sample-aws-devops-agent-cdk">sample-aws-devops-agent-cdk</a> for the space, and <a href="https://github.com/aws-samples/sample-aws-devops-agent-cloudwatch">sample-aws-devops-agent-cloudwatch</a> for the alarm→webhook bridge. Both are CDK/SAM; a Terraform version is straightforward and closer to how you work.</p>
+</section>
+
+<footer>
+  <p>Sources</p>
+  <ul>
+    <li><a href="https://docs.aws.amazon.com/devopsagent/latest/userguide/what-is.html">AWS DevOps Agent User Guide</a></li>
+    <li><a href="https://docs.aws.amazon.com/devopsagent/latest/userguide/about-aws-devops-agent-devops-agent-skills.html">DevOps Agent Skills</a></li>
+    <li><a href="https://docs.aws.amazon.com/devopsagent/latest/userguide/getting-started-with-aws-devops-agent-getting-started-with-aws-devops-agent-using-aws-cloudformation.html">Getting started with CloudFormation</a></li>
+    <li><a href="https://docs.aws.amazon.com/devopsagent/latest/userguide/about-aws-devops-agent-supported-regions.html">Supported Regions</a></li>
+    <li><a href="https://docs.aws.amazon.com/cli/latest/reference/devops-agent/index.html">AWS CLI <code>devops-agent</code> reference</a></li>
+    <li><a href="https://aws.amazon.com/devops-agent/pricing/">Pricing</a></li>
+    <li><a href="https://aws.amazon.com/devops-agent/faqs">FAQs</a></li>
+    <li><a href="https://aws.amazon.com/blogs/devops/best-practices-for-deploying-aws-devops-agent-in-production/">Best practices for production deployment</a></li>
+    <li><a href="https://awsfundamentals.com/blog/aws-devops-agent">AWS Fundamentals — hands-on evaluation</a></li>
+    <li><a href="https://aws.amazon.com/about-aws/whats-new/2026/03/aws-devops-agent-generally-available">GA announcement</a></li>
+    <li><a href="https://github.com/aws-samples/sample-devops-agent-tools">Community skills gallery</a></li>
+  </ul>
+</footer>
+
+</div>

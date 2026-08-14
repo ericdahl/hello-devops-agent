@@ -1,0 +1,16 @@
+# Terraform state holds your account id and every resource ARN. Never commit it.
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+
+# Provider binaries and build artifacts
+.terraform/
+terraform/.build/
+
+# .terraform.lock.hcl is intentionally NOT ignored - committing it pins provider
+# versions so anyone cloning this gets the same ones.
+
+.DS_Store
+__pycache__/
+*.pyc
