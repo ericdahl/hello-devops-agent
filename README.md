@@ -247,12 +247,30 @@ it shows concretely what a skill buys you over the base model.
 
 ### Teardown
 
+Two things were created outside Terraform, so `destroy` alone does not fully
+clean up. Remove the event channel first — it belongs to the agent space and can
+block its deletion:
+
 ```bash
+SP=$(terraform output -raw agent_space_id)
+for id in $(aws devops-agent list-associations --agent-space-id "$SP" \
+    --query "associations[?serviceId=='event_channel'].associationId" --output text); do
+  aws devops-agent disassociate-service --agent-space-id "$SP" --association-id "$id"
+done
+
 terraform destroy
 ```
 
-Do not skip this. The Fargate task bills continuously and the crash loop will
-keep opening investigations, which bill per second.
+Then delete the log group Container Insights creates for itself, which Terraform
+never knew about:
+
+```bash
+aws logs delete-log-group \
+  --log-group-name /aws/ecs/containerinsights/hello-devops-agent/performance
+```
+
+Do not skip teardown. The Fargate task bills continuously and a running crash
+loop keeps opening investigations, which bill per second.
 
 ## Cost
 
