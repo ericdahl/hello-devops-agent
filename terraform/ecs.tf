@@ -1,8 +1,8 @@
 locals {
-  # Bumped alongside the leak so the task definition diff carries a version
-  # change, which is the kind of signal the agent looks for when it asks
+  # Bumped alongside the cache change so the task definition diff carries a
+  # version change too, which is the signal the agent looks for when it asks
   # "what shipped just before this broke?".
-  app_version = var.enable_leak ? "1.5.0" : "1.4.2"
+  app_version = var.cache_key_mode == "order" ? "1.5.0" : "1.4.2"
 }
 
 resource "aws_ecs_cluster" "this" {
@@ -67,13 +67,17 @@ resource "aws_ecs_task_definition" "order_processor" {
         "python3",
         "-u",
         "-c",
-        file("${path.module}/app/leaky_service.py"),
+        file("${path.module}/app/order_processor.py"),
       ]
 
+      # The agent can read all of this from the task definition, so nothing here
+      # may name the fault. cache_key_mode is the only meaningful difference
+      # between the healthy and broken revisions.
       environment = [
         { name = "APP_VERSION", value = local.app_version },
-        { name = "LEAK_MB_PER_MIN", value = tostring(var.enable_leak ? var.leak_mb_per_min : 0) },
-        { name = "MEM_LIMIT_MB", value = tostring(var.container_memory_hard) },
+        { name = "CACHE_KEY_MODE", value = var.cache_key_mode },
+        { name = "TARGET_ORDER_RATE", value = tostring(var.target_order_rate) },
+        { name = "CATALOG_SIZE", value = tostring(var.catalog_size) },
       ]
 
       logConfiguration = {

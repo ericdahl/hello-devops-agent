@@ -41,7 +41,7 @@ output "bridge_log_group" {
 }
 
 output "app_version" {
-  description = "Version currently deployed; changes when enable_leak flips"
+  description = "Version currently deployed; changes when cache_key_mode flips"
   value       = local.app_version
 }
 

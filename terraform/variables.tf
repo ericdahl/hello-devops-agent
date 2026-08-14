@@ -10,20 +10,49 @@ variable "name_prefix" {
   default     = "hello-devops-agent"
 }
 
-variable "enable_leak" {
+variable "cache_key_mode" {
   description = <<-EOT
-    Phase switch for the demo. false deploys the healthy build; flipping it to
-    true registers a new task definition revision that retains memory, which is
-    the change the agent is expected to find.
+    What the pricing cache is keyed on, and the phase switch for the demo.
+
+    "sku"   - keyed on the product SKU. Bounded by catalog_size, high hit rate,
+              flat memory. This is the healthy build.
+    "order" - keyed on the order id. Every order id is unique, so the cache never
+              hits and never stops growing. Reaches the container memory limit in
+              a few minutes.
+
+    Nothing in the container names this as a fault. The failure has to be reasoned
+    out from the cache hit rate collapsing, the entry count climbing without bound,
+    and the task definition diff.
   EOT
-  type        = bool
-  default     = false
+  type        = string
+  default     = "sku"
+
+  validation {
+    condition     = contains(["sku", "order"], var.cache_key_mode)
+    error_message = "cache_key_mode must be \"sku\" or \"order\"."
+  }
 }
 
-variable "leak_mb_per_min" {
-  description = "Memory retained per minute when enable_leak is true. 120 reaches the container limit in roughly three minutes."
+variable "target_order_rate" {
+  description = <<-EOT
+    Orders processed per second. Drives how fast the fault develops: each cached
+    quote is roughly 25 KB, so 55/s retains about 104 MB/min in "order" mode and
+    reaches the 400 MB container limit in roughly 3.5 minutes.
+  EOT
+  type        = number
+  default     = 55
+}
+
+variable "catalog_size" {
+  description = "Number of distinct SKUs. In \"sku\" mode this is the cache's upper bound, so it is what keeps memory flat."
   type        = number
   default     = 120
+}
+
+variable "desired_count" {
+  description = "Tasks to run. Set to 0 to halt a crash loop without tearing anything down - investigations already opened stay readable."
+  type        = number
+  default     = 1
 }
 
 variable "task_memory" {
@@ -42,16 +71,10 @@ variable "container_memory_hard" {
   description = <<-EOT
     Container hard memory limit (MiB). Kept below task_memory so the container is
     OOM-killed first, which produces stopCode EssentialContainerExited and an
-    "OutOfMemoryError" stoppedReason rather than a platform-level task failure.
+    "OutOfMemoryError" container reason rather than a platform-level task failure.
   EOT
   type        = number
   default     = 400
-}
-
-variable "desired_count" {
-  description = "Tasks to run. Set to 0 to halt a crash loop without tearing anything down - investigations already opened stay readable."
-  type        = number
-  default     = 1
 }
 
 variable "enable_memory_alarm" {

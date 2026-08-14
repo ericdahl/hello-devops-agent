@@ -62,7 +62,30 @@ State explicitly whether the crash loop began before or after the most recent
 deployment. If it began after, name the specific revision and the specific
 changed field.
 
-## Step 4: Read the logs for a leading indicator
+## Step 4: If it is retention, find the collection that never shrinks
+
+Retention almost always means something accumulates per unit of work and is
+never released. Work outward from the code and config in the task definition:
+
+- **Caches keyed on a unique value.** A cache keyed on something unique per
+  request — an order id, a request id, a session id, a timestamp — has unbounded
+  key cardinality. It never hits and never stops growing. The same cache keyed on
+  a low-cardinality attribute (product, tenant, region) is bounded by that
+  attribute's domain. A configuration change that only alters *what the key is*
+  looks harmless in a diff and is a common cause.
+- **Confirm with the hit rate, not the size alone.** A hit rate at or near zero
+  alongside an entry count that tracks total requests is conclusive: every lookup
+  is inserting a new entry. A healthy bounded cache shows a high hit rate and an
+  entry count that plateaus.
+- **Other usual suspects.** Unbounded queues or buffers, accumulating metrics or
+  audit lists, listeners or connections registered but never removed, retry
+  structures that append on every attempt.
+
+Compare the entry count against the configured bound where one exists. If the
+count settles at roughly the size of some catalog, tenant list, or enum, the
+cache is behaving. If it climbs with traffic, it is not.
+
+## Step 5: Read the logs for a leading indicator
 
 Search the service log group in the window between task start and task stop.
 Look for the last lines before termination — an OOM-killed process is cut off
@@ -72,7 +95,7 @@ Useful patterns: growing cache or buffer counts, rising heap or RSS figures,
 "memory" warnings, and any metric the application logs about its own retained
 state.
 
-## Step 5: Report
+## Step 6: Report
 
 Give the answer in this order:
 

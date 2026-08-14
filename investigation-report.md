@@ -1,3 +1,11 @@
+> **Baseline from the earlier, deliberately obvious variant.**
+>
+> This run is kept for comparison. At the time, the task definition carried
+> `LEAK_MB_PER_MIN=120`, which named the fault outright — the agent read the
+> variable and was done. The current demo replaces that with a cache whose key
+> cardinality changes, and nothing in the container names the fault. Expect a
+> materially different investigation.
+
 # Investigation Summary
 
 ## Symptoms

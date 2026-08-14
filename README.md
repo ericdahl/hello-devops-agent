@@ -3,23 +3,37 @@
 A deliberately broken ECS Fargate service, wired to AWS DevOps Agent, so you can
 watch a real investigation happen end to end.
 
-The workload is a mock order processor that retains memory until Fargate
-OOM-kills it. The service scheduler restarts it, it dies again, and you get a
-crash loop with a genuine evidence trail: a memory metric climbing, warning logs
-before each kill, an ECS stop event, and — the important part — a task definition
-revision registered minutes earlier that introduced the leak.
+The workload is a mock order processor with a memoized pricing engine. A config
+change repoints its quote cache from the product SKU to the order id. Order ids
+are unique, so the cache stops hitting and starts growing without bound, and
+Fargate OOM-kills the container a few minutes into every task.
 
-That last piece is the point. Anyone can point an agent at a broken thing. The
-question worth answering is whether it finds *what changed*.
+**Nothing in the container names the fault.** There is no `LEAK` variable, no
+comment flagging the bug, no log line mentioning memory. The application source
+is embedded in the task definition, so the agent can read all of it — and the
+code looks like ordinary caching code, because it is. The only difference between
+the healthy and broken revisions is one string:
+
+```diff
+- CACHE_KEY_MODE=sku      # bounded by the 120-SKU catalog, ~100% hit rate
++ CACHE_KEY_MODE=order    # unbounded: every order id is unique
+```
+
+That is the point of the exercise. Pointing an agent at something obviously
+broken proves nothing. Reaching the root cause here means chaining several steps:
+notice memory grows linearly and resets on restart, find the task definition diff,
+read the caching code, work out that order ids have unbounded cardinality, and
+corroborate against a cache hit rate that fell from 1.00 to 0.00 while the entry
+count climbed with traffic.
 
 ## Architecture
 
 ```
- enable_leak=true                                               DevOps Agent
+ cache_key_mode=order                                           DevOps Agent
         │                                                             │
         ▼                          EventBridge                        │
   task def rev 2  ──► ECS service ──► task stopped ──► bridge ───────►│ webhook
-  LEAK_MB_PER_MIN=120     │           stopCode=          Lambda       │ (HMAC)
+  CACHE_KEY_MODE=order    │           stopCode=          Lambda       │ (HMAC)
   APP_VERSION=1.5.0       │           EssentialContainerExited        │
                           ▼           exit 137                        ▼
                     OOM kill ─────────┘                         investigation
@@ -74,7 +88,7 @@ observed run peaked at 69%. An 80% threshold never fires.
 | `ecs.tf` | Cluster, log group, task definition, Fargate service |
 | `detection.tf` | EventBridge rule, bridge Lambda, webhook secret, optional memory alarm |
 | `scripts/setup-webhook.sh` | Creates the event channel and captures its credentials |
-| `app/leaky_service.py` | The mock service. Runs from a public Python image — no build, no ECR |
+| `app/order_processor.py` | The mock service. Runs from a public Python image — no build, no ECR |
 | `lambda/incident_bridge.py` | EventBridge → webhook translation and signing. Stdlib only |
 | `skills/ecs-fargate-oom/SKILL.md` | An investigation skill to load in phase 5 |
 
@@ -114,9 +128,15 @@ Wait for the service to reach a steady state and confirm it is genuinely healthy
 aws logs tail "$(terraform output -raw service_log_group)" --follow
 ```
 
-You want `rss_mb` flat and `cache_entries=0`. Let it run a few minutes — the agent
-is mapping topology in the background, and a healthy baseline makes the later
-comparison meaningful.
+You want the stats line to settle like this — `cache_entries` pinned at the
+catalog size and the hit rate at 1.00:
+
+```
+INFO stats window_s=15 orders=803 rate=53.3/s cache_entries=120 cache_hit_rate=1.00 avg_quote_ms=0.00
+```
+
+Let it run a few minutes. The agent is mapping topology in the background, and a
+healthy baseline is what makes the later comparison meaningful.
 
 ### Phase 2 — connect the webhook
 
@@ -143,25 +163,29 @@ clobber it.
 ### Phase 3 — break it
 
 ```bash
-terraform apply -var enable_leak=true
+terraform apply -var cache_key_mode=order
 ```
 
-This registers task definition revision 2 with `LEAK_MB_PER_MIN=120` and
-`APP_VERSION=1.5.0`, and updates the service. Roughly what happens next:
+This registers task definition revision 2 with `CACHE_KEY_MODE=order` and
+`APP_VERSION=1.5.0`, and updates the service.
 
-Observed timings from an actual run:
+Measured locally, the cache retains about **104 MB/min** at 55 orders/s with
+~25 KB per quote, so the 400 MB container limit arrives in roughly 3.5 minutes:
 
 | Time | Event |
 |---|---|
-| +0s | Rev 2 task starts, `rss_mb` begins climbing from ~8 MB |
-| ~1m | `rss_mb=148`, `cache_entries=14` |
-| ~2m | `WARN memory headroom low` appears in the service logs |
+| +0s | Rev 2 task starts, `cache_entries` climbing, `cache_hit_rate=0.00` |
+| ~15s | First stats line already shows ~800 entries and a zero hit rate |
 | ~3m30s | Container OOM-killed, `exitCode 137`, incident POSTed, webhook returns 200 |
 | ~3m45s | Scheduler starts a replacement, cycle repeats |
-| +8m | Investigation reaches `COMPLETED` |
 
-A second OOM roughly four minutes later opened a task that the agent marked
-`LINKED` rather than investigating again — it correlated the two as one problem.
+The service never logs anything about memory. The only in-app signal is the
+contrast between these two lines:
+
+```
+cache_entries=120   cache_hit_rate=1.00     <- revision 1, healthy
+cache_entries=1617  cache_hit_rate=0.00     <- revision 2, climbing with traffic
+```
 
 Watch it:
 
@@ -180,7 +204,7 @@ To stop the crash loop without tearing anything down — investigations already
 opened stay readable:
 
 ```bash
-terraform apply -var enable_leak=true -var desired_count=0
+terraform apply -var cache_key_mode=order -var desired_count=0
 ```
 
 ### Phase 4 — read the investigation
@@ -215,25 +239,39 @@ aws devops-agent list-journal-records --agent-space-id "$SP" --execution-id "$EX
 `investigation_summary_md` and `mitigation_summary_md` are the two that matter.
 See `investigation-report.md` for the output of an actual run.
 
-Look for whether the agent:
+Score it against the chain of reasoning the fault actually requires. Each step is
+harder than the one before:
 
-- Identified the OOM rather than just "task stopped"
-- Noticed memory climbs at a constant rate and resets on restart — retention, not load
-- **Found task definition revision 2 and named `LEAK_MB_PER_MIN` as the change**
-- Recommended reverting rather than raising the memory limit
+1. Identified the OOM rather than just "task stopped"
+2. Noticed memory climbs linearly and resets on restart — retention, not load or
+   under-provisioning
+3. Found task definition revision 2 and identified `CACHE_KEY_MODE` as the change
+4. **Explained *why* that change causes retention** — that order ids are unique
+   per order, so the cache never hits and has no upper bound
+5. Corroborated with the application's own signal: hit rate 1.00 → 0.00 while
+   `cache_entries` tracks total orders
+6. Recommended reverting the key, not raising the memory limit or adding eviction
 
-On the recorded run it got all four right, including naming the CloudTrail actor
-and flagging that the circuit breaker was disabled. See `investigation-report.md`.
+Step 4 is the real test. Steps 1–3 are mechanical correlation, which the agent is
+reliably good at. Step 4 needs a claim about *cardinality* that nothing in the
+environment states. Step 6 is where a plausible-sounding wrong answer lives:
+raising the limit or bolting on an LRU both postpone the crash without fixing the
+cache that was never supposed to be per-order.
 
-The fourth one is the real test. Raising the limit is the plausible-sounding wrong
-answer, and per independent testing this class of "which side of the mismatch is
-actually wrong" judgment is where the agent is weakest.
+An earlier, deliberately obvious version of this demo set `LEAK_MB_PER_MIN=120`
+in the task definition. The agent solved it immediately, which proved very little
+— see `investigation-report.md` for that run, kept as a difficulty baseline.
 
 ### Phase 5 — add a skill and compare
 
 `skills/ecs-fargate-oom/SKILL.md` encodes the investigation procedure: distinguish
-retention from under-provisioning from load, and don't recommend a limit increase
-until retention is ruled out.
+retention from under-provisioning from load, then — once retention is established
+— go looking for the collection that never shrinks. It names cache key cardinality
+explicitly as a suspect and says to confirm with the hit rate rather than the
+entry count alone.
+
+That maps directly onto step 4 above, which is the step the base agent is most
+likely to miss, so this is where a skill should earn its keep.
 
 Load it via **Knowledge → Skills → Add skill**, then force another incident:
 
