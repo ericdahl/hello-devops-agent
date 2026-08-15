@@ -136,12 +136,6 @@ variable "memory_alarm_threshold" {
   default     = 60
 }
 
-variable "enable_container_insights" {
-  description = "Enables per-task memory metrics. Costs a few dollars a month at this scale but makes the investigation noticeably richer."
-  type        = bool
-  default     = true
-}
-
 variable "log_retention_days" {
   description = "Retention for the service log group."
   type        = number

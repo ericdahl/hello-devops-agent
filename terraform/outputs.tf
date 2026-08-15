@@ -62,3 +62,8 @@ output "watch_tasks_command" {
 output "tail_service_logs_command" {
   value = "aws logs tail ${aws_cloudwatch_log_group.service.name} --follow --region ${var.region}"
 }
+
+output "agent_space_log_group" {
+  description = "Agent space delivery-path logs: which webhook fired, which association, what error"
+  value       = aws_cloudwatch_log_group.agent_space.name
+}
