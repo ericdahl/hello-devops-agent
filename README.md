@@ -119,7 +119,7 @@ observed run peaked at 69%. An 80% threshold never fires.
 
 ## What gets created
 
-33 resources in one root module:
+38 resources in one root module:
 
 | File | Contents |
 |---|---|
@@ -127,6 +127,7 @@ observed run peaked at 69%. An 80% threshold never fires.
 | `network.tf` | VPC, two public subnets, IGW, egress-only security group |
 | `ecs.tf` | Cluster, log group, task definition, Fargate service |
 | `detection.tf` | EventBridge rules (`var.event_rules`), bridge Lambda, webhook secret, optional memory alarm |
+| `observability.tf` | Vended log delivery of the agent space's own logs to CloudWatch |
 | `scripts/setup-webhook.sh` | Creates the event channel and captures its credentials |
 | `app/order_processor.py` | The mock service. Runs from a public Python image — no build, no ECR |
 | `lambda/incident_bridge.py` | Generic EventBridge → webhook proxy. Interprets nothing. Stdlib only |
@@ -143,6 +144,11 @@ Notes on a few choices:
   deployment itself and the crash loop would vanish before you could investigate it.
 - **`awscc` provider for the agent space.** The `aws` provider has no DevOps Agent
   resources yet — only the older, unrelated DevOps Guru.
+- **Log delivery for the agent space itself.** The only view into the delivery
+  path — which webhook fired, which association handled it, what error came back.
+  Undocumented; the supported sources and fields come from `aws logs
+  describe-configuration-templates --service aidevops`. See the caveat below on
+  what it does and does not contain.
 
 ## Prerequisites
 
@@ -388,14 +394,80 @@ loop keeps opening investigations, which bill per second.
 | Item | Cost |
 |---|---|
 | Fargate, 0.25 vCPU / 0.5 GB, continuous | ~$0.012/hr (~$9/mo) |
-| Container Insights, one task | a few dollars/month — set `enable_container_insights=false` to skip |
+| Container Insights, one task | a few dollars/month |
 | DevOps Agent | $0.0083/agent-second ($29.88/hr) while investigating |
 | VPC / EventBridge / Lambda / logs | negligible at this volume |
 
 A new account gets a 2-month trial including 20 hours of investigations, which
-covers this comfortably. **There is no per-incident cost cap** — a crash loop left
-running unattended will keep opening investigations. Put a budget alarm on the
-account before phase 3, and tear down when you are done.
+covers this comfortably. Check actual spend with `aws devops-agent
+get-account-usage`, which breaks out investigation, system learning, evaluation
+and on-demand hours separately.
+
+Two things to know before pointing this at anything real.
+
+**System learning bills too.** On one measured session it was 0.31 hours against
+0.91 hours of investigation — about a quarter of the total. That is the space
+mapping your account and writing its memory files, and it fires on space creation
+whether or not you ever send it an incident.
+
+**Every usage category returns `limit: -1`.** There is no per-incident or
+per-month ceiling in the service, so AWS Budgets is the only real backstop. Put
+one on the account before phase 3.
+
+### Repeat incidents
+
+A crash loop does not cost one investigation per crash. The service collapses
+repeats into an existing incident. Nine consecutive OOM kills, five minutes
+apart, produced this:
+
+```
+17:24:47  COMPLETED   <- full investigation
+17:29:51  LINKED
+17:35:29  LINKED
+17:40:40  LINKED
+17:46:08  COMPLETED   <- full investigation
+17:51:49  LINKED
+17:57:21  LINKED
+18:02:36  LINKED
+18:08:12  COMPLETED   <- full investigation
+```
+
+Nine events, three investigations, six linked — and it did that unaided. Each
+dead task had its own ARN, so the bridge sent nine distinct `incidentId` values;
+the service linked them by similarity rather than by our key.
+
+Two caveats. `LINKED` tasks still carry their own `executionId`, so something ran
+to decide they were duplicates — cheaper than a full RCA, not free. And the
+window resets after roughly twenty minutes, so a loop left running overnight
+settles at about three investigations an hour indefinitely. The steady state is
+the exposure, not the initial burst.
+
+If that is still too much, in the order worth reaching for:
+
+1. **Trigger on alarm state rather than raw events.** An alarm is edge-triggered:
+   it holds state and fires once on the transition into `ALARM` however many
+   underlying failures occur. A resource event fires per occurrence. Its
+   `M of N` datapoints setting becomes your suppression window, tunable per
+   signal, with no state added anywhere.
+2. **Suppress in a triage skill.** `INCIDENT_TRIAGE` is a distinct agent type
+   that runs before the expensive RCA, and skills attached to it can decline to
+   investigate. Every new agent space ships an inactive sample of exactly this,
+   `sample-skip-scheduled-maintenance`, which filters low-priority alarms during
+   a maintenance window. "An investigation is already open for this service" is
+   the same shape of rule.
+3. **Choose a coarser `incidentId`.** The bridge hashes the event's `resources`,
+   which for a crash loop means the ephemeral task ARN. Hashing cluster, service
+   and failure kind instead collapses repeats into one incident with updates. Go
+   too coarse and a genuinely different failure gets swallowed into the open one,
+   so keep the failure kind in the key.
+4. **Stop the loop at the source.** This demo disables the ECS deployment circuit
+   breaker on purpose. With `enable = true, rollback = true` the platform gives
+   up after N failed starts and reverts, so you get two events and a healthy
+   service instead of a loop.
+
+A debounce cache in the bridge is the obvious fifth option and probably the wrong
+one: it turns a stateless proxy into something with a datastore and a TTL, to
+duplicate suppression the service already does natively.
 
 ## Caveats
 
@@ -414,6 +486,20 @@ account before phase 3, and tear down when you are done.
   `agent.tf` to the value of `terraform output agent_space_arn`.
 - **SCPs must allow `aidevops:*` and `bedrock:InvokeModel`**, or investigations fail
   even with everything here configured correctly.
+- **Agent space log delivery is plumbing, not reasoning.** The `allowedFields`
+  are `webhook_id`, `association_id`, `status`, `operation`, `request_id`,
+  `error_type`, `error_message`, `task_type`, `task_id` and friends — the
+  delivery path, which is otherwise invisible because the bridge Lambda only
+  sees its own HTTP response. There is nothing in it about findings, hypotheses
+  or tool calls; that lives in journal records. Vended delivery writes as
+  `delivery.logs.amazonaws.com`, so the destination log group needs a resource
+  policy admitting that principal — the console adds it silently, Terraform does
+  not, and without it the delivery is created successfully and then writes
+  nothing. `observability.tf` includes it. On the recorded run the group
+  received CloudWatch's own `Permissions are set correctly` validation message,
+  confirming the policy, but **a webhook POST rejected for a bad signature did
+  not produce an entry** — so either rejections are dropped before the logging
+  layer or delivery needs successful activity. Untested beyond that.
 - **`event_channel` is undocumented but real.** The service id, the empty
   `{"eventChannel":{}}` configuration, and the fact that `associate-service`
   returns webhook credentials were all found by reading the CLI model, not the
