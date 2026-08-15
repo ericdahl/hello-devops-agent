@@ -252,14 +252,23 @@ EXEC=$(aws devops-agent get-backlog-task --agent-space-id "$SP" \
   --task-id "$TASK" --query 'task.executionId' --output text)
 
 aws devops-agent list-journal-records --agent-space-id "$SP" --execution-id "$EXEC" \
-  | python3 -c 'import json,sys;[print(r["content"],"\n---\n") for r in \
-      sorted(json.load(sys.stdin)["records"], key=lambda x:x["createdAt"]) \
-      if r["recordType"].endswith("_md")]'
+  | python3 -c 'import json,sys
+recs=sorted(json.load(sys.stdin)["records"], key=lambda r: r["createdAt"])
+for r in recs:
+    if r["recordType"] in ("symptom","finding","observation"):
+        c=json.loads(r["content"])
+        print("## [%s] %s\n%s\n" % (c["type"], c.get("title",""), c.get("description","")))'
 ```
 
-`recordType` values ending in `_md` are the human-readable summaries;
-`investigation_summary_md` and `mitigation_summary_md` are the two that matter.
-See `investigation-report.md` for the output of an actual run.
+`symptom`, `finding` and `observation` records are JSON and carry the reasoning —
+a `finding` has a `finding_type` (`hypothesis`, `cause`, `root_cause`) plus
+`resolution` and `resolution_reason`, so you can watch a hypothesis get promoted
+to a confirmed cause. The rendered summary you see in the web app is
+`ui_investigation_summary`: a component tree rather than markdown, emitted many
+times as the investigation progresses, so take the last one and flatten it.
+`message` records are the agent's running commentary.
+
+See `investigation-report.md` for the full output of an actual run.
 
 Score it against the chain of reasoning the fault actually requires. Each step is
 harder than the one before:
@@ -299,7 +308,7 @@ aws devops-agent list-assets --agent-space-id "$SP" \
 
 An earlier, deliberately obvious version of this demo set `LEAK_MB_PER_MIN=120`
 in the task definition. The agent solved it immediately, which proved very little
-— see `investigation-report.md` for that run, kept as a difficulty baseline.
+— see `docs/investigation-report-obvious-variant.md`, kept as a difficulty baseline.
 
 ### Phase 5 — add a skill and compare
 
