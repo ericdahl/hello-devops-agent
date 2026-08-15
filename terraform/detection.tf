@@ -1,11 +1,14 @@
 # Detection path: EventBridge -> bridge Lambda -> HMAC-signed webhook POST.
 #
-# The ECS task-stopped rule is the real trigger and is sufficient on its own: the
-# event carries exit code 137 and "OutOfMemoryError", and the agent does the rest
-# of the digging itself with its read-only role.
+# The Lambda is a generic proxy: it forwards whatever EventBridge sends it and
+# does not interpret any of it. Which signals reach the agent is therefore
+# entirely a function of the rules below, so adding one - health check failures,
+# crashes, latency, error rates - is a new entry in local.event_rules and no code
+# change.
 #
-# The memory alarm below is an optional second trigger (enable_memory_alarm) that
-# only buys you an earlier start. It is off by default.
+# The ECS task-stopped rule is the demo's trigger and is sufficient on its own.
+# The memory alarm is an optional second trigger (enable_memory_alarm) that only
+# buys an earlier start. It is off by default.
 
 resource "aws_secretsmanager_secret" "webhook" {
   name                    = "${var.name_prefix}/webhook"
@@ -154,35 +157,68 @@ resource "aws_lambda_permission" "alarm" {
   source_arn    = aws_cloudwatch_event_rule.alarm[0].arn
 }
 
-# --- Primary trigger: the task actually died ----------------------------------
+# --- Signals -------------------------------------------------------------------
 
-resource "aws_cloudwatch_event_rule" "task_stopped" {
-  name        = "${var.name_prefix}-task-stopped"
-  description = "Fire when a task in this cluster dies because its container exited"
+locals {
+  # Every entry here becomes a rule pointing at the same Lambda. Override the
+  # whole map with var.event_rules to feed the agent something else entirely.
+  default_event_rules = {
+    # Filtering on stopCode rather than the stoppedReason string keeps normal
+    # rolling-deploy stops out: those arrive as ServiceSchedulerInitiated.
+    task-stopped = jsonencode({
+      source        = ["aws.ecs"]
+      "detail-type" = ["ECS Task State Change"]
+      detail = {
+        clusterArn = [aws_ecs_cluster.this.arn]
+        lastStatus = ["STOPPED"]
+        stopCode   = ["EssentialContainerExited", "TaskFailedToStart"]
+      }
+    })
+  }
 
-  # Filtering on stopCode rather than the stoppedReason string keeps normal
-  # rolling-deploy stops out: those arrive as ServiceSchedulerInitiated.
-  event_pattern = jsonencode({
-    source        = ["aws.ecs"]
-    "detail-type" = ["ECS Task State Change"]
-    detail = {
-      clusterArn = [aws_ecs_cluster.this.arn]
-      lastStatus = ["STOPPED"]
-      stopCode   = ["EssentialContainerExited", "TaskFailedToStart"]
-    }
-  })
+  event_rules = length(var.event_rules) > 0 ? var.event_rules : local.default_event_rules
 }
 
-resource "aws_cloudwatch_event_target" "task_stopped" {
-  rule      = aws_cloudwatch_event_rule.task_stopped.name
+# The ECS rule predates the for_each map and keeps its name, so migrate it in
+# state rather than letting Terraform recreate it into its own name. Safe to
+# delete once applied; only affects stacks deployed before this change.
+moved {
+  from = aws_cloudwatch_event_rule.task_stopped
+  to   = aws_cloudwatch_event_rule.signal["task-stopped"]
+}
+
+moved {
+  from = aws_cloudwatch_event_target.task_stopped
+  to   = aws_cloudwatch_event_target.signal["task-stopped"]
+}
+
+moved {
+  from = aws_lambda_permission.task_stopped
+  to   = aws_lambda_permission.signal["task-stopped"]
+}
+
+resource "aws_cloudwatch_event_rule" "signal" {
+  for_each = local.event_rules
+
+  name          = "${var.name_prefix}-${each.key}"
+  description   = "Forward ${each.key} events to the DevOps Agent bridge"
+  event_pattern = each.value
+}
+
+resource "aws_cloudwatch_event_target" "signal" {
+  for_each = local.event_rules
+
+  rule      = aws_cloudwatch_event_rule.signal[each.key].name
   target_id = "incident-bridge"
   arn       = aws_lambda_function.bridge.arn
 }
 
-resource "aws_lambda_permission" "task_stopped" {
-  statement_id  = "AllowExecutionFromEventBridgeEcs"
+resource "aws_lambda_permission" "signal" {
+  for_each = local.event_rules
+
+  statement_id  = "AllowExecutionFromEventBridge-${each.key}"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.bridge.function_name
   principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.task_stopped.arn
+  source_arn    = aws_cloudwatch_event_rule.signal[each.key].arn
 }

@@ -36,8 +36,8 @@ variable "cache_key_mode" {
 variable "target_order_rate" {
   description = <<-EOT
     Orders processed per second. Drives how fast the fault develops: each cached
-    quote is roughly 25 KB, so 55/s retains about 104 MB/min in "order" mode and
-    reaches the 400 MB container limit in roughly 3.5 minutes.
+    quote is roughly 20 KB, so 55/s retains about 1.1 MB/s in "order" mode and
+    reaches the 400 MB container limit in roughly five minutes.
   EOT
   type        = number
   default     = 55
@@ -75,6 +75,32 @@ variable "container_memory_hard" {
   EOT
   type        = number
   default     = 400
+}
+
+variable "event_rules" {
+  description = <<-EOT
+    EventBridge rules that feed the bridge Lambda, as name => event pattern JSON.
+    Empty means "use the demo's ECS task-stopped rule" (see local.event_rules).
+
+    The Lambda forwards whatever it receives without interpreting it, so this map
+    is the only thing that decides which signals reach the agent. Adding ALB
+    target health, container crashes, latency alarms or error-rate alarms is an
+    entry here, not a code change:
+
+      event_rules = {
+        target-unhealthy = jsonencode({
+          source        = ["aws.elasticloadbalancing"]
+          "detail-type" = ["ELB Target Health Change"]
+        })
+        latency-alarm = jsonencode({
+          source        = ["aws.cloudwatch"]
+          "detail-type" = ["CloudWatch Alarm State Change"]
+          detail        = { state = { value = ["ALARM"] } }
+        })
+      }
+  EOT
+  type        = map(string)
+  default     = {}
 }
 
 variable "enable_memory_alarm" {

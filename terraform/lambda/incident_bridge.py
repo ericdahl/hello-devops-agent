@@ -1,7 +1,10 @@
-"""Bridge EventBridge events into an AWS DevOps Agent webhook.
+"""Forward any EventBridge event to an AWS DevOps Agent webhook.
 
-DevOps Agent has no native EventBridge or CloudWatch alarm target, so this
-function translates events into the webhook's incident schema and signs them.
+This is a transport, not an interpreter. It does not know what an ECS task is,
+what an exit code means, or which events are worth investigating. The
+EventBridge rule decides what arrives; the agent decides what it means. Adding a
+new signal - health check failures, crashes, latency, error rates - is a new rule
+pointing at this same function, with no code change here.
 
 Signing contract (matches aws-samples/sample-aws-devops-agent-cloudwatch):
     signature = base64(HMAC-SHA256(secret, "<timestamp>:<payload_json>"))
@@ -22,6 +25,7 @@ import urllib.request
 import boto3
 
 SECRET_ARN = os.environ["SECRET_ARN"]
+DEFAULT_PRIORITY = os.environ.get("DEFAULT_PRIORITY", "HIGH")
 PLACEHOLDER = "REPLACE_ME"
 
 _secrets = boto3.client("secretsmanager")
@@ -39,129 +43,70 @@ def load_webhook():
     url, secret = data.get("webhookUrl"), data.get("webhookSecret")
     if not url or not secret or PLACEHOLDER in (url, secret):
         raise RuntimeError(
-            "Webhook credentials are still placeholders. Create the webhook in the "
-            "DevOps Agent web app, then run the put-secret-value command from "
-            "`terraform output -raw set_webhook_command`."
+            "Webhook credentials are still placeholders. Run scripts/setup-webhook.sh."
         )
     return url, secret
 
 
 def short(arn):
-    return arn.rsplit("/", 1)[-1] if arn else "unknown"
+    """Last path or colon segment of an ARN, for human-readable labels."""
+    if not arn:
+        return "unknown"
+    tail = arn.rsplit("/", 1)[-1]
+    return tail if tail != arn else arn.rsplit(":", 1)[-1]
 
 
-def from_ecs_task(event):
-    """ECS Task State Change -> incident."""
-    d = event.get("detail", {})
-    cluster = short(d.get("clusterArn"))
-    task_id = short(d.get("taskArn"))
-    task_def = short(d.get("taskDefinitionArn"))
-    group = d.get("group", "")
-    service = group.split(":", 1)[1] if group.startswith("service:") else group
-    reason = d.get("stoppedReason", "unknown")
-    stop_code = d.get("stopCode", "unknown")
+def incident_id(event):
+    """Stable dedupe key.
 
-    containers = []
-    for c in d.get("containers", []):
-        containers.append(
-            {
-                "name": c.get("name"),
-                "exitCode": c.get("exitCode"),
-                "reason": c.get("reason"),
-            }
-        )
-
-    oom = "outofmemory" in reason.lower() or any(
-        "outofmemory" in (c.get("reason") or "").lower() for c in containers
-    )
-    headline = "OOM-killed" if oom else "stopped unexpectedly"
-
-    description = "\n".join(
-        [
-            'ECS task %s in service "%s" %s.' % (task_id, service, headline),
-            "",
-            "Cluster:         %s" % cluster,
-            "Service:         %s" % service,
-            "Task definition: %s" % task_def,
-            "Stop code:       %s" % stop_code,
-            "Stopped reason:  %s" % reason,
-            "Started at:      %s" % d.get("startedAt", "unknown"),
-            "Stopped at:      %s" % d.get("stoppedAt", "unknown"),
-            "Containers:      %s" % json.dumps(containers),
-            "",
-            "The service scheduler will replace the task, so expect a restart loop "
-            "until the underlying cause is fixed. Investigate recent task definition "
-            "revisions and deployments for this service, and correlate container "
-            "memory usage against the task memory limit.",
-        ]
-    )
-
-    return {
-        # Stable per task, so a replay of the same event dedupes rather than
-        # opening a second investigation.
-        "incidentId": "ecs-task-stopped-%s" % task_id,
-        "priority": "HIGH" if oom else "MEDIUM",
-        "title": "ECS task %s in %s (%s)" % (headline, service, cluster),
-        "description": description,
-        "service": service or cluster,
-        "metadata": {
-            "signal": "ecs-task-state-change",
-            "cluster_arn": d.get("clusterArn"),
-            "task_arn": d.get("taskArn"),
-            "task_definition_arn": d.get("taskDefinitionArn"),
-            "service_name": service,
-            "stop_code": stop_code,
-            "stopped_reason": reason,
-            "containers": containers,
-            "region": event.get("region"),
-            "account": event.get("account"),
-        },
-    }
+    The agent opens one investigation per incidentId, so this must be identical
+    across repeats of the same problem and different across distinct problems.
+    Hashing the affected resources gives that generically: an alarm keeps its
+    ARN while flapping, so it dedupes. A crash loop gets a new task ARN each
+    restart, so each death is its own incident - the agent links them itself
+    rather than us guessing at the grouping.
+    """
+    parts = [
+        event.get("source", ""),
+        event.get("detail-type", ""),
+        "|".join(sorted(event.get("resources") or [])),
+    ]
+    digest = hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:32]
+    return "eventbridge-%s" % digest
 
 
-def from_alarm(event):
-    """CloudWatch Alarm State Change -> incident."""
-    d = event.get("detail", {})
-    name = d.get("alarmName", "unknown")
-    state = d.get("state", {})
-    reason = state.get("reason", "no reason provided")
-
-    description = "\n".join(
-        [
-            'CloudWatch alarm "%s" entered %s.' % (name, state.get("value", "ALARM")),
-            "",
-            "Reason: %s" % reason,
-            "Region: %s" % event.get("region"),
-            "",
-            "This is a leading indicator: memory is climbing but the task has not "
-            "been killed yet. Check whether utilization is trending up steadily "
-            "rather than spiking, which would suggest retention rather than load.",
-        ]
-    )
-
-    return {
-        # Bucket by minute so a flapping alarm does not open an investigation per flap.
-        "incidentId": "alarm-%s-%s" % (name, event.get("time", "")[:16]),
-        "priority": "MEDIUM",
-        "title": "CloudWatch alarm: %s" % name,
-        "description": description,
-        "service": name,
-        "metadata": {
-            "signal": "cloudwatch-alarm",
-            "alarm_name": name,
-            "alarm_arn": d.get("alarmArn") or event.get("resources", [None])[0],
-            "state": state.get("value"),
-            "reason": reason,
-            "region": event.get("region"),
-            "account": event.get("account"),
-        },
-    }
+def describe(event):
+    """Render the event for a reader who has not been told what it means."""
+    resources = event.get("resources") or []
+    lines = [
+        "An AWS EventBridge event was delivered for this account.",
+        "",
+        "Source:      %s" % event.get("source", "unknown"),
+        "Detail type: %s" % event.get("detail-type", "unknown"),
+        "Event time:  %s" % event.get("time", "unknown"),
+        "Account:     %s" % event.get("account", "unknown"),
+        "Region:      %s" % event.get("region", "unknown"),
+    ]
+    if resources:
+        lines.append("Resources:")
+        lines.extend("  %s" % r for r in resources)
+    lines += [
+        "",
+        "Full event:",
+        "```json",
+        json.dumps(event, indent=2, sort_keys=True, default=str),
+        "```",
+        "",
+        "Determine what this event indicates about the health of the affected "
+        "resources, establish the underlying cause, and recommend a remediation.",
+    ]
+    return "\n".join(lines)
 
 
 def post(url, secret, payload):
     timestamp = iso_millis()
     # Serialize once: these exact bytes are both signed and sent.
-    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    body = json.dumps(payload, separators=(",", ":"), default=str).encode("utf-8")
     signed = ("%s:" % timestamp).encode("utf-8") + body
     signature = base64.b64encode(
         hmac.new(secret.encode("utf-8"), signed, hashlib.sha256).digest()
@@ -185,34 +130,37 @@ def post(url, secret, payload):
 
 
 def handler(event, context):
-    print("received event: %s" % json.dumps(event))
-    detail_type = event.get("detail-type")
+    print("received event: %s" % json.dumps(event, default=str))
 
-    if detail_type == "ECS Task State Change":
-        incident = from_ecs_task(event)
-    elif detail_type == "CloudWatch Alarm State Change":
-        incident = from_alarm(event)
-    else:
-        print("ignoring unsupported detail-type: %s" % detail_type)
-        return {"status": "ignored", "detailType": detail_type}
+    detail_type = event.get("detail-type") or event.get("source") or "Event"
+    resources = event.get("resources") or []
+    label = short(resources[0]) if resources else event.get("account", "")
 
     payload = {
         "eventType": "incident",
-        "incidentId": incident["incidentId"],
+        "incidentId": incident_id(event),
         "action": "created",
-        "priority": incident["priority"],
-        "title": incident["title"],
-        "description": incident["description"],
-        "service": incident["service"],
+        "priority": DEFAULT_PRIORITY,
+        "title": "%s: %s" % (detail_type, label) if label else detail_type,
+        "description": describe(event),
+        # The agent anchors on this to find the resource in its topology graph.
+        # Passed as a full ARN rather than a guessed short name: which ARN
+        # segment holds the "service" differs per resource type (cluster for an
+        # ECS task, target group for an ELB target, the tail for an alarm), and
+        # guessing wrong anchors it to the wrong thing.
+        "service": resources[0] if resources else event.get("source", "aws"),
         "timestamp": iso_millis(),
-        "data": {"metadata": incident["metadata"]},
+        # Semantics of this object are undocumented, so the raw event goes here
+        # and is also rendered into the description above, on the assumption the
+        # agent reads the prose.
+        "data": {"metadata": {"event": event}},
     }
 
     url, secret = load_webhook()
-    status, body = post(url, secret, payload)
-    print("webhook responded status=%s body=%s" % (status, body))
+    status, text = post(url, secret, payload)
 
+    print("webhook responded status=%s body=%s" % (status, text))
     if status >= 300:
-        raise RuntimeError("webhook rejected the incident: %s %s" % (status, body))
+        raise RuntimeError("webhook rejected the incident: %s %s" % (status, text))
 
     return {"status": status, "incidentId": payload["incidentId"]}

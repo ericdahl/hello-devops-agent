@@ -68,8 +68,26 @@ Elapsed: about 4 minutes from incident to summary.
 ```
 
 One trigger is enough. DevOps Agent has no native EventBridge target, so a small
-Lambda translates the ECS event into the webhook's incident schema and HMAC-signs
-it.
+Lambda wraps the event in the webhook's incident schema and HMAC-signs it.
+
+**The Lambda is a generic proxy.** It knows nothing about ECS, exit codes or
+memory — it forwards whatever EventBridge hands it, with the raw event embedded
+in both the description and the metadata, and lets the agent do the
+interpretation. So which signals reach the agent is decided entirely by
+`var.event_rules`, and adding one is config rather than code:
+
+```hcl
+event_rules = {
+  task-stopped     = jsonencode({ source = ["aws.ecs"], ... })
+  target-unhealthy = jsonencode({ source = ["aws.elasticloadbalancing"], ... })
+  latency-alarm    = jsonencode({ source = ["aws.cloudwatch"], ... })
+}
+```
+
+Each entry becomes a rule pointing at the same function. Dedupe is derived
+generically by hashing the event's `resources` array, so a flapping alarm keeps
+one incident while a crash loop opens one per dead task — the agent links those
+itself rather than the bridge guessing at the grouping.
 
 **Push to start, pull to investigate.** The agent does not poll your metrics
 looking for anomalies. Nothing happens until something pushes to it. But once
@@ -108,11 +126,11 @@ observed run peaked at 69%. An 80% threshold never fires.
 | `agent.tf` | Agent space, operator app role, agent space role, AWS account association |
 | `network.tf` | VPC, two public subnets, IGW, egress-only security group |
 | `ecs.tf` | Cluster, log group, task definition, Fargate service |
-| `detection.tf` | EventBridge rule, bridge Lambda, webhook secret, optional memory alarm |
+| `detection.tf` | EventBridge rules (`var.event_rules`), bridge Lambda, webhook secret, optional memory alarm |
 | `scripts/setup-webhook.sh` | Creates the event channel and captures its credentials |
 | `app/order_processor.py` | The mock service. Runs from a public Python image — no build, no ECR |
-| `lambda/incident_bridge.py` | EventBridge → webhook translation and signing. Stdlib only |
-| `skills/ecs-fargate-oom/SKILL.md` | An investigation skill to load in phase 5 |
+| `lambda/incident_bridge.py` | Generic EventBridge → webhook proxy. Interprets nothing. Stdlib only |
+| `skills/workload-incident/SKILL.md` | A generic investigation skill to load in phase 5 |
 
 Notes on a few choices:
 
@@ -312,14 +330,21 @@ in the task definition. The agent solved it immediately, which proved very littl
 
 ### Phase 5 — add a skill and compare
 
-`skills/ecs-fargate-oom/SKILL.md` encodes the investigation procedure: distinguish
-retention from under-provisioning from load, then — once retention is established
-— go looking for the collection that never shrinks. It names cache key cardinality
-explicitly as a suspect and says to confirm with the hit rate rather than the
-entry count alone.
+`skills/workload-incident/SKILL.md` is deliberately generic. It never mentions
+memory, exit codes, caches or this demo at all — it is a method for any workload
+that has become unhealthy, which is what you would actually write for a team
+fielding OOMs, failed health checks, crashes and latency regressions from the
+same pipeline.
 
-That maps directly onto step 4 above, which is the step the base agent is most
-likely to miss, so this is where a skill should earn its keep.
+What it encodes is process discipline: establish what failed before hypothesising,
+get the shape over time rather than a single point, correlate against what
+changed, separate the latent defect from the trigger that exposed it, corroborate
+from an independent source, and distrust a fix that only raises a limit.
+
+An earlier version of this skill was specific to this scenario — it explained
+that exit code 137 means the OOM killer, and named cache key cardinality as a
+suspect. It was removed because it was an answer key, and a skill that contains
+the answer tells you nothing about whether skills help.
 
 Load it via **Knowledge → Skills → Add skill**, then force another incident:
 
