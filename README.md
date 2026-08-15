@@ -26,6 +26,28 @@ read the caching code, work out that order ids have unbounded cardinality, and
 corroborate against a cache hit rate that fell from 1.00 to 0.00 while the entry
 count climbed with traffic.
 
+## What it produces
+
+![DevOps Agent investigation timeline showing findings, an evidence timeline and a cache growth chart](docs/investigation-timeline.png)
+
+That is an unedited run against this repo. Working from an ECS stop event, the
+agent reached the causal mechanism on its own:
+
+> With `sku` mode, the pricing cache is bounded to `CATALOG_SIZE` (120) entries.
+> With `order` mode, every processed order creates a new cache entry (~20 KB
+> each) that is never evicted. At 55 orders/sec, the cache grows by ~1.1 MB/s,
+> exhausting the 400 MB container memory limit in approximately 5 minutes —
+> matching the observed time to OOM.
+
+Note what that required. Nothing told it order ids are unique; it inferred that
+the cardinality of the key is what changed, then derived a growth rate from the
+entry size and order rate and checked it against the observed time to death. It
+also recovered the deploying user and the exact `terraform apply` from CloudTrail,
+plotted `cache_entries` from log lines, ruled out an unrelated concurrent AWS
+event, and recommended reverting the key rather than raising the limit.
+
+Elapsed: about 4 minutes from incident to summary.
+
 ## Architecture
 
 ```
@@ -79,7 +101,7 @@ observed run peaked at 69%. An 80% threshold never fires.
 
 ## What gets created
 
-37 resources in one root module:
+33 resources in one root module:
 
 | File | Contents |
 |---|---|
@@ -169,15 +191,15 @@ terraform apply -var cache_key_mode=order
 This registers task definition revision 2 with `CACHE_KEY_MODE=order` and
 `APP_VERSION=1.5.0`, and updates the service.
 
-Measured locally, the cache retains about **104 MB/min** at 55 orders/s with
-~25 KB per quote, so the 400 MB container limit arrives in roughly 3.5 minutes:
+The cache retains roughly 1.1 MB/s at 55 orders/s with ~20 KB per quote, so the
+400 MB container limit arrives about five minutes in:
 
 | Time | Event |
 |---|---|
 | +0s | Rev 2 task starts, `cache_entries` climbing, `cache_hit_rate=0.00` |
 | ~15s | First stats line already shows ~800 entries and a zero hit rate |
-| ~3m30s | Container OOM-killed, `exitCode 137`, incident POSTed, webhook returns 200 |
-| ~3m45s | Scheduler starts a replacement, cycle repeats |
+| ~5m | Container OOM-killed, `exitCode 137`, incident POSTed, webhook returns 200 |
+| ~5m15s | Scheduler starts a replacement, cycle repeats |
 
 The service never logs anything about memory. The only in-app signal is the
 contrast between these two lines:
@@ -257,6 +279,23 @@ reliably good at. Step 4 needs a claim about *cardinality* that nothing in the
 environment states. Step 6 is where a plausible-sounding wrong answer lives:
 raising the limit or bolting on an LRU both postpone the crash without fixing the
 cache that was never supposed to be per-order.
+
+On the recorded run it got all six, including step 4, and explicitly declined to
+propose a second mitigation because the rollback already covered the single cause.
+
+One thing to know before you score your own run: **the agent writes itself a
+baseline before anything breaks.** A `SYSTEM_LEARNING` task fires on space
+creation and stores markdown memory files describing your architecture — in this
+demo it recorded `CACHE_KEY_MODE | sku | Quote cache key strategy` and the format
+of the `stats` log line while the healthy revision was still running. So step 3
+is easier than it looks: it has a written record of what normal was. That is the
+product working as intended, not a leak in the scenario, but it means the
+interesting part of the score is steps 4 and 6.
+
+```bash
+aws devops-agent list-assets --agent-space-id "$SP" \
+  --query "items[?assetType=='memory'].metadata.name"
+```
 
 An earlier, deliberately obvious version of this demo set `LEAK_MB_PER_MIN=120`
 in the task definition. The agent solved it immediately, which proved very little
