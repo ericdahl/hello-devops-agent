@@ -26,6 +26,13 @@ read the caching code, work out that order ids have unbounded cardinality, and
 corroborate against a cache hit rate that fell from 1.00 to 0.00 while the entry
 count climbed with traffic.
 
+A second, independent fault (`pricing_mode=async`, [Phase 3b](#phase-3b--the-same-symptom-a-different-cause))
+produces the **same** outward signature — exit 137, `OutOfMemoryError`, same
+event — from an unrelated cause: worker threads that park forever on a bounded
+audit buffer, each holding its own rule-engine scratch. It exists to test
+whether an agent that has already explained one OOM here reaches for the
+explanation it stored last time.
+
 ## What it produces
 
 ![DevOps Agent investigation timeline showing findings, an evidence timeline and a cache growth chart](docs/investigation-timeline.png)
@@ -178,7 +185,7 @@ You want the stats line to settle like this — `cache_entries` pinned at the
 catalog size and the hit rate at 1.00:
 
 ```
-INFO stats window_s=15 orders=803 rate=53.3/s cache_entries=120 cache_hit_rate=1.00 avg_quote_ms=0.00
+INFO stats window_s=15 orders=825 rate=55.0/s cache_entries=120 cache_hit_rate=1.00 avg_quote_ms=0.00 threads=1 audit_exported=8 audit_pending=104
 ```
 
 Let it run a few minutes. The agent is mapping topology in the background, and a
@@ -252,6 +259,58 @@ opened stay readable:
 ```bash
 terraform apply -var cache_key_mode=order -var desired_count=0
 ```
+
+### Phase 3b — the same symptom, a different cause
+
+```bash
+terraform apply -var pricing_mode=async
+```
+
+An independent fault that produces an **identical outward signature**: exit 137,
+`OutOfMemoryError`, the same EventBridge event, the same detection path. Nothing
+about what the agent receives distinguishes it from Phase 3.
+
+The cause is not the cache. Quotes carry a TTL, and in `async` mode a stale one
+is rebuilt by a worker thread rather than by the accept loop. Two ordinary
+decisions combine badly:
+
+- rule evaluation stages rows through a scratch buffer sized for the engine's
+  rule ceiling rather than the loaded rule set, so a worker cannot share the
+  accept loop's engine and allocates its own (~192 KB)
+- a worker is off the accept path, so it publishes to the bounded audit buffer
+  with a blocking put instead of dropping the record on overflow
+
+The audit buffer is exported slower than quotes go stale, so every worker parks
+in `put()` and never releases its scratch. Live threads become the allocation.
+
+Measured on a real run (task started 16:22:52Z, killed 16:36:42Z):
+
+| Time | Event |
+|---|---|
+| +0s | Rev with `PRICING_MODE=async`, `APP_VERSION=1.6.0` starts, `threads=1` |
+| ~45s | First TTL expiry — ~120 workers spawn, 8 export per window, the rest park |
+| every ~48s | Another cohort parks; `threads` steps up ~90, RSS ~17 MB |
+| +13m50s | `threads=1519` and climbing → OOM-killed, `exitCode 137` |
+
+What makes it a different problem to solve is what the logs *rule out*:
+
+```
+cache_entries=120  cache_hit_rate=1.00  rate=55.0/s  threads=1      <- inline, healthy
+cache_entries=120  cache_hit_rate=1.00  rate=55.0/s  threads=1519   <- async, 30s before the kill
+```
+
+The cache is bounded and at a perfect hit rate the whole time, and throughput
+never degrades — so the explanation that fits Phase 3 is disproven here. Memory
+tracks `threads`, and it climbs as a staircase stepping once per TTL rather than
+as a smooth ramp. `audit_pending` sits at its ceiling in *both* modes, so a full
+buffer is not on its own the tell.
+
+This is the more interesting run if the agent has already investigated Phase 3,
+because it writes what it learns to a memory store that persists across
+investigations. A second OOM in a service it has already concluded "OOMs because
+the pricing cache is keyed on order id" tests whether that retained conclusion
+helps or misleads — a confident wrong answer in four minutes is a worse outcome
+than a correct one in twenty.
 
 ### Phase 4 — read the investigation
 
@@ -436,11 +495,46 @@ Nine events, three investigations, six linked — and it did that unaided. Each
 dead task had its own ARN, so the bridge sent nine distinct `incidentId` values;
 the service linked them by similarity rather than by our key.
 
-Two caveats. `LINKED` tasks still carry their own `executionId`, so something ran
-to decide they were duplicates — cheaper than a full RCA, not free. And the
-window resets after roughly twenty minutes, so a loop left running overnight
-settles at about three investigations an hour indefinitely. The steady state is
-the exposure, not the initial burst.
+**What actually decides it.** Not a hash and not a fixed time bucket. A linked
+task carries a `primaryTaskId` pointing at the investigation it was folded into,
+plus a `statusReason` written in prose:
+
+> Same ECS cluster (hello-devops-agent), same task definition
+> (order-processor:6), same AWS account/region, and identical root cause:
+> container exited with OutOfMemoryError (exitCode 137). This is a recurring OOM
+> failure of the order-processor task, occurring ~14 minutes after the primary's
+> task stopped, indicating an ongoing/recurring memory issue.
+
+A triage step compares each new incident against recent ones on cluster,
+service, task definition, account/region and failure mode. The rule reduces to:
+**an incident that arrives while an investigation is still open is attached to
+it; one that arrives after it closes starts a new one.** The suppression window
+is therefore not a constant — it is however long the previous investigation
+happens to run.
+
+That is visible in the `pricing_mode=async` variant, whose ~14 minute crash
+cycle is shorter than the ~21 minutes an investigation stays open:
+
+```
+16:37:07 -> 16:58:14  COMPLETED   (open 21m)
+16:51:51 -> 16:52:03  LINKED      -> primary 16:37, arrived while it was open
+17:05:14 -> 17:26:08  COMPLETED   (open 21m)
+17:19:44 -> 17:19:58  LINKED      -> primary 17:05, arrived while it was open
+17:33:34 -> 17:41:35  COMPLETED
+```
+
+Strict alternation, one full investigation per two crashes — against one per
+three for the five-minute cache variant. Either way the service settles at
+roughly **two to three full investigations an hour**, largely independent of how
+fast the loop crashes. The steady state is the exposure, not the initial burst.
+
+`LINKED` tasks are close to free: they resolve in 12–14 seconds against 8–21
+minutes for a full RCA, and `list-journal-records` returns **zero records** for
+their `executionId`. They do each get an `executionId` and a triage LLM call, so
+not literally free, but it is rounding error.
+
+One field to distrust: `hasLinkedTasks` reads `false` on the *parent* tasks even
+when children point at them. Walk `primaryTaskId` up from the children instead.
 
 If that is still too much, in the order worth reaching for:
 
@@ -459,7 +553,9 @@ If that is still too much, in the order worth reaching for:
    which for a crash loop means the ephemeral task ARN. Hashing cluster, service
    and failure kind instead collapses repeats into one incident with updates. Go
    too coarse and a genuinely different failure gets swallowed into the open one,
-   so keep the failure kind in the key.
+   so keep the failure kind in the key. Expect less from this than it looks —
+   the service links by similarity and ignored our nine distinct ids anyway, so
+   a coarser key mostly helps *your* downstream systems, not its dedupe.
 4. **Stop the loop at the source.** This demo disables the ECS deployment circuit
    breaker on purpose. With `enable = true, rollback = true` the platform gives
    up after N failed starts and reverts, so you get two events and a healthy
@@ -495,11 +591,12 @@ duplicate suppression the service already does natively.
   `delivery.logs.amazonaws.com`, so the destination log group needs a resource
   policy admitting that principal — the console adds it silently, Terraform does
   not, and without it the delivery is created successfully and then writes
-  nothing. `observability.tf` includes it. On the recorded run the group
-  received CloudWatch's own `Permissions are set correctly` validation message,
-  confirming the policy, but **a webhook POST rejected for a bad signature did
-  not produce an entry** — so either rejections are dropped before the logging
-  layer or delivery needs successful activity. Untested beyond that.
+  nothing. `observability.tf` includes it. Confirmed working on a real run: the
+  `AIDevOpsLogs` stream carried `TOPOLOGY_CREATION` lifecycle records
+  (`STARTED` → `SCHEDULED` → `COMPLETED`) with the agent space ARN and
+  association id. Note that a webhook POST *rejected* for a bad signature
+  produces no entry at all, so an empty log group is not evidence the delivery
+  is broken — it may only mean nothing valid has arrived yet.
 - **`event_channel` is undocumented but real.** The service id, the empty
   `{"eventChannel":{}}` configuration, and the fact that `associate-service`
   returns webhook credentials were all found by reading the CLI model, not the

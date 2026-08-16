@@ -33,6 +33,35 @@ variable "cache_key_mode" {
   }
 }
 
+variable "pricing_mode" {
+  description = <<-EOT
+    How a stale quote gets rebuilt, and the second fault switch.
+
+    "inline" - the accept loop rebuilds it. This is the healthy build.
+    "async"  - a worker thread rebuilds it off the accept path. Each worker
+               carries its own rule-engine scratch buffer (RULE_CAPACITY *
+               ROW_WIDTH, ~192 KB) and publishes to the audit buffer with a
+               blocking put. The buffer is exported more slowly than quotes go
+               stale, so workers park there permanently and never release their
+               scratch. Measured: ~90 workers park per TTL cycle, reaching the
+               400 MB container limit at ~1,600 live threads in 13m50s.
+
+    Worth pairing with cache_key_mode = "order" rather than replacing it: the
+    outward symptom is identical - exit 137, OutOfMemoryError, same event, same
+    detection path - but the cause is not. The cache is bounded and hitting
+    100% the entire time. What has to be noticed is that memory tracks live
+    thread count, and that it climbs as a staircase stepping once per
+    QUOTE_TTL_SECONDS rather than as a smooth ramp.
+  EOT
+  type        = string
+  default     = "inline"
+
+  validation {
+    condition     = contains(["inline", "async"], var.pricing_mode)
+    error_message = "pricing_mode must be \"inline\" or \"async\"."
+  }
+}
+
 variable "target_order_rate" {
   description = <<-EOT
     Orders processed per second. Drives how fast the fault develops: each cached
